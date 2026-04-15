@@ -532,6 +532,10 @@ body {
 }
 
 .ql-editor {
+  /* position:relative makes the ::before placeholder resolve against THIS
+     element instead of the full-width .ql-container positioned ancestor,
+     so the placeholder text appears inside the white paper not the gray gutter */
+  position: relative;
   background: var(--surface);
   max-width: 860px;
   margin: 32px auto 60px;
@@ -562,7 +566,9 @@ body {
 .ql-editor.ql-blank::before {
   font-style: italic;
   color: #CBD5E1;
-  left: 96px;
+  left: 96px;   /* matches padding-left */
+  top: 80px;    /* matches padding-top  */
+  right: 96px;
 }
 
 /* Editor content formatting */
