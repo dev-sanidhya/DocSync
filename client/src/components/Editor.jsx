@@ -26,7 +26,7 @@ const TOOLBAR = [
 
 const SAVE_DEBOUNCE = 800;
 
-export default function Editor({ documentId, socket, onSaveStatus, onWordCount }) {
+export default function Editor({ documentId, socket, onSaveStatus, onWordCount, onInitialTitle }) {
   const containerRef = useRef(null);
 
   useEffect(() => {
@@ -131,7 +131,11 @@ export default function Editor({ documentId, socket, onSaveStatus, onWordCount }
     socket.on('receive-changes', handleReceiveChanges);
     quill.on('text-change', handleTextChange);
 
-    socket.emit('join-document', documentId);
+    socket.emit('join-document', documentId, (initialState) => {
+      if (initialState?.title) {
+        onInitialTitle?.(initialState.title);
+      }
+    });
 
     // ── Cleanup ──────────────────────────────────
     return () => {
@@ -146,7 +150,7 @@ export default function Editor({ documentId, socket, onSaveStatus, onWordCount }
 
       container.innerHTML = '';
     };
-  }, [socket, documentId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [socket, documentId, onInitialTitle]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="editor-wrapper">

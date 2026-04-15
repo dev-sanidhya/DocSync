@@ -37,9 +37,15 @@ function broadcastPresence(docId) {
 io.on('connection', (socket) => {
   let currentDocId = null;
 
-  socket.on('join-document', (documentId) => {
+  socket.on('join-document', (documentId, ack) => {
     // Guard: ignore duplicate joins from the same socket (e.g. dev hot-reload)
-    if (currentDocId === documentId) return;
+    if (currentDocId === documentId) {
+      const doc = getOrCreate(documentId);
+      if (typeof ack === 'function') {
+        ack({ content: doc.content, title: doc.title, chat: doc.chat });
+      }
+      return;
+    }
 
     socket.join(documentId);
     currentDocId = documentId;
@@ -48,6 +54,9 @@ io.on('connection', (socket) => {
     socket.emit('load-document', doc.content);
     socket.emit('load-title', doc.title);
     socket.emit('load-chat', doc.chat);
+    if (typeof ack === 'function') {
+      ack({ content: doc.content, title: doc.title, chat: doc.chat });
+    }
 
     broadcastPresence(documentId);
   });

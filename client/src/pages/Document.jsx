@@ -144,6 +144,12 @@ export default function Document() {
     }
   }, []);
 
+  const handleInitialTitle = useCallback((title) => {
+    const nextTitle = (title || 'Untitled Document').trim() || 'Untitled Document';
+    setDocTitle(nextTitle);
+    document.title = `${nextTitle} â€” DocSync`;
+  }, []);
+
   if (!socket) {
     return (
       <div className="loading-screen">
@@ -240,6 +246,7 @@ export default function Document() {
             socket={socket}
             onSaveStatus={handleSaveStatus}
             onWordCount={setWordCount}
+            onInitialTitle={handleInitialTitle}
           />
         </section>
         <ChatSidebar
