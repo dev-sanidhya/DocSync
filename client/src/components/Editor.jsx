@@ -32,6 +32,7 @@ export default function Editor({ documentId, socket, onSaveStatus, onWordCount }
   useEffect(() => {
     if (!socket || !containerRef.current) return;
 
+    // ── Build Quill ──────────────────────────────
     const container = containerRef.current;
     container.innerHTML = '';
     const editorEl = document.createElement('div');
@@ -43,7 +44,7 @@ export default function Editor({ documentId, socket, onSaveStatus, onWordCount }
       modules: { toolbar: TOOLBAR },
     });
 
-    // Kill browser spell-check (causes the red squiggle artifacts)
+    // Disable browser spell-check / autocorrect so it never squiggles peer text
     const qlEditorEl = container.querySelector('.ql-editor');
     if (qlEditorEl) {
       qlEditorEl.setAttribute('spellcheck', 'false');
@@ -54,59 +55,98 @@ export default function Editor({ documentId, socket, onSaveStatus, onWordCount }
     quill.disable();
     quill.setText('Loading…');
 
-    // ── Load document ────────────────────────────
-    socket.once('load-document', (content) => {
-      quill.setContents(content);
-      quill.enable();
-      quill.setSelection(quill.getLength(), 0);
-      reportWordCount(quill);
-    });
+    // ── State ────────────────────────────────────
+    // 'mounted' lets cleanup invalidate closures that fire after teardown.
+    // Without this, a stale load-document callback could call setContents on a
+    // destroyed Quill instance.
+    let mounted = true;
+    let isLoaded = false;
 
-    socket.emit('join-document', documentId);
+    // Deltas that arrive before the load-document snapshot is applied.
+    // We queue them and replay in order once setContents has run.
+    // This is the core fix for the mirroring bug: previously a delta that
+    // arrived before load-document would get applied to "Loading…" text,
+    // corrupting the retain-offset arithmetic for every subsequent delta.
+    const pendingDeltas = [];
 
-    // ── Send & persist changes ───────────────────
     let saveTimer = null;
 
-    const onTextChange = (delta, _old, source) => {
-      if (source !== 'user') return;
+    // ── Load document snapshot ───────────────────
+    // Named function (not arrow) so socket.off(event, fn) removes exactly
+    // this one listener — never use the no-argument form socket.off(event)
+    // because it nukes ALL listeners including ones from other effects.
+    function handleLoadDocument(content) {
+      if (!mounted) return;
+      quill.setContents(content);
+      quill.enable();
+      isLoaded = true;
+
+      // Replay any deltas that arrived before the snapshot
+      for (const d of pendingDeltas) {
+        quill.updateContents(d);
+      }
+      pendingDeltas.length = 0;
+
+      reportWordCount();
+    }
+
+    // ── Receive peer changes ─────────────────────
+    function handleReceiveChanges(delta) {
+      if (!mounted) return;
+
+      if (!isLoaded) {
+        // Document snapshot hasn't arrived yet — queue for later
+        pendingDeltas.push(delta);
+        return;
+      }
+
+      quill.updateContents(delta);
+      reportWordCount();
+    }
+
+    // ── Send local changes ───────────────────────
+    function handleTextChange(delta, _old, source) {
+      if (!mounted || source !== 'user') return;
 
       onSaveStatus?.('saving');
       socket.emit('send-changes', delta);
-
-      reportWordCount(quill);
+      reportWordCount();
 
       clearTimeout(saveTimer);
       saveTimer = setTimeout(() => {
+        if (!mounted) return;
         socket.emit('save-document', quill.getContents());
         onSaveStatus?.('saved');
       }, SAVE_DEBOUNCE);
-    };
-
-    quill.on('text-change', onTextChange);
-
-    // ── Receive changes from peers ───────────────
-    const onReceiveChanges = (delta) => {
-      quill.updateContents(delta);
-      reportWordCount(quill);
-    };
-    socket.on('receive-changes', onReceiveChanges);
-
-    function reportWordCount(q) {
-      const text = q.getText().trim();
-      const words = text ? text.split(/\s+/).filter(Boolean).length : 0;
-      const chars = text.length;
-      onWordCount?.({ words, chars });
     }
+
+    function reportWordCount() {
+      const text = quill.getText().trim();
+      const words = text ? text.split(/\s+/).filter(Boolean).length : 0;
+      onWordCount?.({ words, chars: text.length });
+    }
+
+    // ── Wire up ──────────────────────────────────
+    socket.on('load-document', handleLoadDocument);
+    socket.on('receive-changes', handleReceiveChanges);
+    quill.on('text-change', handleTextChange);
+
+    socket.emit('join-document', documentId);
 
     // ── Cleanup ──────────────────────────────────
     return () => {
+      mounted = false;
       clearTimeout(saveTimer);
-      quill.off('text-change', onTextChange);
-      socket.off('receive-changes', onReceiveChanges);
-      socket.off('load-document');
+
+      // Always use the exact function reference with socket.off so we don't
+      // accidentally remove listeners from other effects or instances.
+      socket.off('load-document', handleLoadDocument);
+      socket.off('receive-changes', handleReceiveChanges);
+      quill.off('text-change', handleTextChange);
+
       container.innerHTML = '';
     };
-  }, [socket, documentId]); // eslint-disable-line
+  }, [socket, documentId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="editor-wrapper">

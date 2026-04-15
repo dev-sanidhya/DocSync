@@ -33,6 +33,9 @@ io.on('connection', (socket) => {
   let currentDocId = null;
 
   socket.on('join-document', (documentId) => {
+    // Guard: ignore duplicate joins from the same socket (e.g. dev hot-reload)
+    if (currentDocId === documentId) return;
+
     socket.join(documentId);
     currentDocId = documentId;
 
