@@ -12,12 +12,17 @@ const io = new Server(server, {
   cors: { origin: '*', methods: ['GET', 'POST'] },
 });
 
-// docId -> { content, chat, users: Map<socketId, { username, color }> }
+// docId -> { content, title, chat, users: Map<socketId, { username, color }> }
 const documents = new Map();
 
 function getOrCreate(docId) {
   if (!documents.has(docId)) {
-    documents.set(docId, { content: { ops: [] }, chat: [], users: new Map() });
+    documents.set(docId, {
+      content: { ops: [] },
+      title: 'Untitled Document',
+      chat: [],
+      users: new Map(),
+    });
   }
   return documents.get(docId);
 }
@@ -41,6 +46,7 @@ io.on('connection', (socket) => {
 
     const doc = getOrCreate(documentId);
     socket.emit('load-document', doc.content);
+    socket.emit('load-title', doc.title);
     socket.emit('load-chat', doc.chat);
 
     broadcastPresence(documentId);
@@ -51,6 +57,15 @@ io.on('connection', (socket) => {
     const doc = getOrCreate(documentId);
     doc.users.set(socket.id, { username, color });
     broadcastPresence(documentId);
+  });
+
+  // ── Title sync ────────────────────────────────────
+  socket.on('update-title', (title) => {
+    const doc = documents.get(currentDocId);
+    if (!doc || typeof title !== 'string') return;
+    doc.title = title.slice(0, 100);
+    // Broadcast to everyone else in the room
+    socket.to(currentDocId).emit('title-updated', doc.title);
   });
 
   // ── Document sync ──────────────────────────────────
