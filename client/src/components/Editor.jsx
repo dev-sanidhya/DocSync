@@ -2,88 +2,103 @@ import { useEffect, useRef } from 'react';
 import Quill from 'quill';
 import 'quill/dist/quill.snow.css';
 
-// ── Register custom font families ───────────────
+// ── Register Google Font families ───────────────
 const Font = Quill.import('formats/font');
-Font.whitelist = ['arial', 'georgia', 'impact', 'tahoma', 'times-new-roman', 'verdana', 'courier-new'];
+Font.whitelist = [
+  'inter', 'roboto', 'open-sans', 'lato', 'montserrat',
+  'merriweather', 'playfair', 'nunito', 'raleway',
+  'source-code', 'georgia', 'courier-new',
+];
 Quill.register(Font, true);
 
-// ── Toolbar configuration ────────────────────────
+// ── Toolbar ──────────────────────────────────────
 const TOOLBAR = [
-  // Structure: Title (h1), Subtitle (h2), Normal (false)
-  [{ header: [1, 2, false] }],
-  // Typography
+  [{ header: [1, 2, 3, false] }],
   [{ font: Font.whitelist }],
   [{ size: ['small', false, 'large', 'huge'] }],
-  [{ color: [] }],
-  // Text styling
-  ['bold', 'italic', 'underline'],
-  // Lists
-  [{ list: 'bullet' }],
-  // Alignment
+  ['bold', 'italic', 'underline', 'strike'],
+  [{ color: [] }, { background: [] }],
+  [{ list: 'ordered' }, { list: 'bullet' }],
+  ['blockquote', 'code-block'],
   [{ align: [] }],
-  // Misc
-  ['clean'],
+  ['link', 'clean'],
 ];
 
-const SAVE_DEBOUNCE_MS = 1000;
+const SAVE_DEBOUNCE = 800;
 
-export default function Editor({ documentId, socket }) {
+export default function Editor({ documentId, socket, onSaveStatus, onWordCount }) {
   const containerRef = useRef(null);
 
   useEffect(() => {
     if (!socket || !containerRef.current) return;
 
-    // --- Build Quill instance ---
     const container = containerRef.current;
-    container.innerHTML = '';                        // clear on re-mount (strict mode)
+    container.innerHTML = '';
     const editorEl = document.createElement('div');
     container.appendChild(editorEl);
 
     const quill = new Quill(editorEl, {
       theme: 'snow',
-      placeholder: 'Start typing your document…',
+      placeholder: 'Start writing…',
       modules: { toolbar: TOOLBAR },
     });
+
+    // Kill browser spell-check (causes the red squiggle artifacts)
+    const qlEditorEl = container.querySelector('.ql-editor');
+    if (qlEditorEl) {
+      qlEditorEl.setAttribute('spellcheck', 'false');
+      qlEditorEl.setAttribute('autocorrect', 'off');
+      qlEditorEl.setAttribute('autocapitalize', 'off');
+    }
 
     quill.disable();
     quill.setText('Loading…');
 
-    // --- Load existing document content ---
+    // ── Load document ────────────────────────────
     socket.once('load-document', (content) => {
       quill.setContents(content);
       quill.enable();
-      // Move cursor to end
       quill.setSelection(quill.getLength(), 0);
+      reportWordCount(quill);
     });
 
     socket.emit('join-document', documentId);
 
-    // --- Send incremental deltas to peers ---
+    // ── Send & persist changes ───────────────────
     let saveTimer = null;
 
     const onTextChange = (delta, _old, source) => {
       if (source !== 'user') return;
 
-      // Relay the delta to all other clients in the room
+      onSaveStatus?.('saving');
       socket.emit('send-changes', delta);
 
-      // Debounced full-snapshot save so new joiners get current state
+      reportWordCount(quill);
+
       clearTimeout(saveTimer);
       saveTimer = setTimeout(() => {
         socket.emit('save-document', quill.getContents());
-      }, SAVE_DEBOUNCE_MS);
+        onSaveStatus?.('saved');
+      }, SAVE_DEBOUNCE);
     };
 
     quill.on('text-change', onTextChange);
 
-    // --- Receive changes from peers ---
+    // ── Receive changes from peers ───────────────
     const onReceiveChanges = (delta) => {
       quill.updateContents(delta);
+      reportWordCount(quill);
     };
-
     socket.on('receive-changes', onReceiveChanges);
 
-    // --- Cleanup ---
+    function reportWordCount(q) {
+      const text = q.getText().trim();
+      const words = text ? text.split(/\s+/).filter(Boolean).length : 0;
+      const chars = text.length;
+      onWordCount?.({ words, chars });
+    }
+
+    // ── Cleanup ──────────────────────────────────
     return () => {
       clearTimeout(saveTimer);
       quill.off('text-change', onTextChange);
@@ -91,7 +106,7 @@ export default function Editor({ documentId, socket }) {
       socket.off('load-document');
       container.innerHTML = '';
     };
-  }, [socket, documentId]);
+  }, [socket, documentId]); // eslint-disable-line
 
   return (
     <div className="editor-wrapper">
