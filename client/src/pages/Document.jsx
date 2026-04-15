@@ -59,18 +59,12 @@ export default function Document() {
   const { username, color } = useRef(initUser()).current;
 
   // ── Socket ─────────────────────────────────────
+  // Title listeners are registered BEFORE setSocket so they are guaranteed to
+  // be wired on the socket object before the Editor child component's effect
+  // fires (child effects run after parent state updates, but registering here
+  // means the socket already has the listeners the moment it's passed down).
   useEffect(() => {
     const s = io(SERVER_URL, { transports: ['websocket', 'polling'] });
-    setSocket(s);
-    return () => s.disconnect();
-  }, []);
-
-  // ── Title sync from server ──────────────────────
-  // When a collaborator is SHARING the link, they already have the doc open.
-  // The new joiner gets 'load-title' on connection; existing users get
-  // 'title-updated' when someone renames the document.
-  useEffect(() => {
-    if (!socket) return;
 
     function onLoadTitle(title) {
       const t = title || 'Untitled Document';
@@ -82,13 +76,16 @@ export default function Document() {
       document.title = `${title} — DocSync`;
     }
 
-    socket.on('load-title', onLoadTitle);
-    socket.on('title-updated', onTitleUpdated);
+    s.on('load-title', onLoadTitle);
+    s.on('title-updated', onTitleUpdated);
+
+    setSocket(s);
     return () => {
-      socket.off('load-title', onLoadTitle);
-      socket.off('title-updated', onTitleUpdated);
+      s.off('load-title', onLoadTitle);
+      s.off('title-updated', onTitleUpdated);
+      s.disconnect();
     };
-  }, [socket]);
+  }, []);
 
   // ── Presence ───────────────────────────────────
   useEffect(() => {
