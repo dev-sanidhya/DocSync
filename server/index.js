@@ -5,87 +5,89 @@ const cors = require('cors');
 
 const app = express();
 app.use(cors({ origin: '*' }));
-
-// Basic health-check endpoint
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: {
-    origin: '*',
-    methods: ['GET', 'POST'],
-  },
+  cors: { origin: '*', methods: ['GET', 'POST'] },
 });
 
-// In-memory store: docId -> { content: Delta, chat: Message[] }
+// docId -> { content, chat, users: Map<socketId, { username, color }> }
 const documents = new Map();
 
+function getOrCreate(docId) {
+  if (!documents.has(docId)) {
+    documents.set(docId, { content: { ops: [] }, chat: [], users: new Map() });
+  }
+  return documents.get(docId);
+}
+
+function broadcastPresence(docId) {
+  const doc = documents.get(docId);
+  if (!doc) return;
+  const users = Array.from(doc.users.values());
+  io.to(docId).emit('users-update', users);
+}
+
 io.on('connection', (socket) => {
-  // Each socket joins a document room
+  let currentDocId = null;
+
   socket.on('join-document', (documentId) => {
     socket.join(documentId);
+    currentDocId = documentId;
 
-    // Initialise document slot if first visitor
-    if (!documents.has(documentId)) {
-      documents.set(documentId, { content: { ops: [] }, chat: [] });
-    }
-
-    const doc = documents.get(documentId);
-
-    // Send existing document state and chat history to the joining client
+    const doc = getOrCreate(documentId);
     socket.emit('load-document', doc.content);
     socket.emit('load-chat', doc.chat);
 
-    // Broadcast updated user count to everyone in the room
-    const broadcastUserCount = () => {
-      const room = io.sockets.adapter.rooms.get(documentId);
-      const count = room ? room.size : 0;
-      io.to(documentId).emit('user-count', count);
+    broadcastPresence(documentId);
+  });
+
+  // User announces their identity after joining
+  socket.on('user-presence', ({ documentId, username, color }) => {
+    const doc = getOrCreate(documentId);
+    doc.users.set(socket.id, { username, color });
+    broadcastPresence(documentId);
+  });
+
+  // ── Document sync ──────────────────────────────────
+  socket.on('send-changes', (delta) => {
+    if (currentDocId) socket.to(currentDocId).emit('receive-changes', delta);
+  });
+
+  socket.on('save-document', (content) => {
+    const doc = documents.get(currentDocId);
+    if (doc) doc.content = content;
+  });
+
+  // ── Chat ──────────────────────────────────────────
+  socket.on('send-message', ({ message, sender, color }) => {
+    const doc = documents.get(currentDocId);
+    if (!doc) return;
+
+    const msg = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      message,
+      sender,
+      color,
+      timestamp: new Date().toISOString(),
     };
-    broadcastUserCount();
 
-    // ---------- Document sync ----------
+    doc.chat.push(msg);
+    if (doc.chat.length > 200) doc.chat = doc.chat.slice(-200);
+    io.to(currentDocId).emit('receive-message', msg);
+  });
 
-    // Receive an incremental Quill delta from one client, relay to others
-    socket.on('send-changes', (delta) => {
-      socket.to(documentId).emit('receive-changes', delta);
-    });
-
-    // Receive the full document snapshot (debounced on client) and persist it
-    socket.on('save-document', (content) => {
-      const d = documents.get(documentId);
-      if (d) d.content = content;
-    });
-
-    // ---------- Chat ----------
-
-    socket.on('send-message', ({ message, sender }) => {
-      const d = documents.get(documentId);
-      if (!d) return;
-
-      const msg = {
-        id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-        message,
-        sender,
-        timestamp: new Date().toISOString(),
-      };
-
-      d.chat.push(msg);
-      // Cap history at 200 messages per room
-      if (d.chat.length > 200) d.chat = d.chat.slice(-200);
-
-      io.to(documentId).emit('receive-message', msg);
-    });
-
-    // ---------- Cleanup ----------
-
-    socket.on('disconnect', () => {
-      broadcastUserCount();
-    });
+  // ── Cleanup ───────────────────────────────────────
+  socket.on('disconnect', () => {
+    if (!currentDocId) return;
+    const doc = documents.get(currentDocId);
+    if (doc) {
+      doc.users.delete(socket.id);
+      broadcastPresence(currentDocId);
+    }
   });
 });
 
 const PORT = process.env.PORT || 3001;
-server.listen(PORT, () => {
-  console.log(`DocSync server listening on http://localhost:${PORT}`);
-});
+server.listen(PORT, () => console.log(`DocSync server → http://localhost:${PORT}`));
