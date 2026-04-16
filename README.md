@@ -8,6 +8,7 @@ Live demo: [https://docsync-cm.vercel.app](https://docsync-cm.vercel.app)
 
 ## Table of Contents
 
+- [Architecture](#architecture)
 - [Features](#features)
 - [Tech Stack](#tech-stack)
 - [Project Structure](#project-structure)
@@ -16,6 +17,95 @@ Live demo: [https://docsync-cm.vercel.app](https://docsync-cm.vercel.app)
 - [Environment Variables](#environment-variables)
 - [Deployment](#deployment)
 - [Known Limitations](#known-limitations)
+
+---
+
+## Architecture
+
+```
+                        ┌─────────────────────────────────────────┐
+                        │              Browser (Client A)          │
+                        │                                          │
+                        │  ┌──────────┐       ┌────────────────┐  │
+                        │  │ Home.jsx │       │  Document.jsx  │  │
+                        │  │          │       │                │  │
+                        │  │ Generate │       │  Navbar        │  │
+                        │  │ UUID doc │       │  Title sync    │  │
+                        │  │ URL      │       │  Presence      │  │
+                        │  └──────────┘       │  PDF export    │  │
+                        │                     └───────┬────────┘  │
+                        │                             │            │
+                        │                    ┌────────┴────────┐  │
+                        │                    │   Editor.jsx    │  │
+                        │                    │                 │  │
+                        │                    │  Quill instance │  │
+                        │                    │  Delta queue    │  │
+                        │                    │  Save debounce  │  │
+                        │                    └────────┬────────┘  │
+                        │                             │            │
+                        │                    ┌────────┴────────┐  │
+                        │                    │ ChatSidebar.jsx │  │
+                        │                    └────────┬────────┘  │
+                        └─────────────────────────────┼───────────┘
+                                                       │
+                                          Socket.IO (WebSocket)
+                                                       │
+                              ┌────────────────────────┼──────────────────────┐
+                              │         Node.js + Express Server               │
+                              │                        │                       │
+                              │         ┌──────────────┴────────────┐          │
+                              │         │       Socket.IO            │          │
+                              │         │                            │          │
+                              │         │  join-document             │          │
+                              │         │  send-changes              │          │
+                              │         │  save-document             │          │
+                              │         │  update-title              │          │
+                              │         │  user-presence             │          │
+                              │         │  send-message              │          │
+                              │         └──────────────┬─────────────┘          │
+                              │                        │                        │
+                              │         ┌──────────────┴─────────────┐          │
+                              │         │     In-Memory Store         │          │
+                              │         │                             │          │
+                              │         │  Map<docId, {               │          │
+                              │         │    content: Delta,          │          │
+                              │         │    title: string,           │          │
+                              │         │    chat: Message[],         │          │
+                              │         │    users: Map<socketId>     │          │
+                              │         │  }>                         │          │
+                              │         └─────────────────────────────┘          │
+                              └────────────────────────────────────────────────┘
+                                                       │
+                                          Socket.IO (WebSocket)
+                                                       │
+                        ┌─────────────────────────────-┼───────────┐
+                        │              Browser (Client B)           │
+                        │                                           │
+                        │   Receives:  load-document (snapshot)     │
+                        │             load-title                    │
+                        │             load-chat                     │
+                        │             receive-changes (deltas)      │
+                        │             users-update (presence)       │
+                        │             receive-message (chat)        │
+                        └───────────────────────────────────────────┘
+```
+
+### Delta Sync Flow
+
+```
+Client A (typing)                Server                  Client B (reading)
+
+text-change fires
+      │
+  emit send-changes(delta)
+      │─────────────────────► broadcast to room
+                                    │──────────────────► receive-changes(delta)
+                                    │                          │
+                              store snapshot             isLoaded?
+                              (save-document)             YES: updateContents(delta)
+                                                          NO:  pendingDeltas.push(delta)
+                                                               (replayed after load-document)
+```
 
 ---
 
